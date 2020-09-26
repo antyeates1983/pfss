@@ -2,13 +2,17 @@ import numpy as n
 import scipy.linalg as la
 import output_netcdf
 
-def pfss(br0, nr, ns, np, rss, filename='', output='a', testQ=False):
+def pfss(br0, nr, ns, np, rss, filename='', output='a', testQ=False, outerBC='radial', br1=[]):
     """
-        Extrapolate 3D PFSS using eigenfunction method in r,s,p coordinates, on the dumfric grid (equally spaced in
+        Compute 3D potential field using eigenfunction method in r,s,p coordinates, on the dumfric grid (equally spaced in
         rho=ln(r/rsun), s=cos(theta0), and p=phi).
        
         The output should have zero current to machine precision,
         when computed with the DuMFriC staggered discretization.
+       
+        Outer boundary condition is controlled by the flag "outerBC":
+        outerBC='radial': Bs = Bp = 0 on r=rss
+        outerBC='br': Br = br1 on r=rss
        
         Output depends on the flag 'output':
          output='none': as it says
@@ -19,6 +23,7 @@ def pfss(br0, nr, ns, np, rss, filename='', output='a', testQ=False):
         Set testQ=True to compare the discrete eigenfunctions Qj_{lm}  to Plm(cos(th)).
         
     Copyright (C) Anthony R. Yeates, Durham University 29/8/17
+    ** modified 1/2/19 to add option of br outer boundary condition.
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -54,6 +59,10 @@ def pfss(br0, nr, ns, np, rss, filename='', output='a', testQ=False):
     
     # FFT in phi of photospheric distribution at each latitude:
     brt = n.fft.rfft(br0, axis=1)
+       
+    # FFT in phi of outer distribution at each latitude (if required):
+    if (outerBC=='br'):
+        brt1 = n.fft.rfft(br1, axis=1)
 
     # Prepare tridiagonal matrix:
     # - create off-diagonal part of the matrix:
@@ -77,6 +86,7 @@ def pfss(br0, nr, ns, np, rss, filename='', output='a', testQ=False):
 
     # Loop over azimuthal modes (positive m):
     for m in range(np//2 + 1):
+        print(m)
         # - set diagonal terms of matrix:
         for j in range(ns):
             A[j,j] = Vg[j] + Vg[j+1] + Uc[j]*mu[m]
@@ -89,13 +99,35 @@ def pfss(br0, nr, ns, np, rss, filename='', output='a', testQ=False):
         ffm = e1/ffp
         # - compute radial term for each l (for this m):
         for l in range(ns):
-            # - sum c_{lm} + d_{lm}
+            # - sum c_{lm} + d_{lm} [from BC at photosphere]:
             cdlm = n.dot(Q[:,l], brt[:,m])/lam[l]
-            # - ratio c_{lm}/d_{lm} [numerically safer this way up]
-            ratio = (ffm[l]**(nr-1) - ffm[l]**nr)/(ffp[l]**nr - ffp[l]**(nr-1))
-            dlm = cdlm/(1.0 + ratio)
-            clm = ratio*dlm
-            psir[:,l] = clm*ffp[l]**k + dlm*ffm[l]**k
+            if (outerBC=='radial'):
+                # - ratio c_{lm}/d_{lm}
+                ratio = (1 - ffm[l])/(ffp[l] - 1)
+                ratio *= (ffm[l]/ffp[l])**(nr-1)
+                dlm = cdlm/(1.0 + ratio)
+                clm = ratio*dlm
+            if (outerBC=='br'):
+                # - sum c_{lm}*ffp**nr + d_{lm}*ffm**nr [from BC at photosphere]:
+                cdlm1 = n.dot(Q[:,l], brt1[:,m])/lam[l]*rss**2
+                # - solve simultaneously to get clm and dlm:
+                clm = (cdlm1 - ffm[l]**nr*cdlm)/(ffp[l]**nr - ffm[l]**nr)
+                dlm = (cdlm1 - ffp[l]**nr*cdlm)/(ffm[l]**nr - ffp[l]**nr)
+                
+#            Set psir[:,l] = clm*ffp[l]**k + dlm*ffm[l]**k
+            with n.errstate(over='raise'): # catch overflow for high res and split product
+                for kdiv in range(1,nr+1):
+                    kd = k//kdiv
+                    psir[:,l] = clm
+                    try:
+                        for k1 in range(kdiv-1):
+                            psir[:,l] *= ffp[l]**kd
+                        psir[:,l] *= ffp[l]**(k-(kdiv-1)*kd)
+                        break
+                    except FloatingPointError:
+                        continue
+            psir[:,l] += dlm*ffm[l]**k
+
         # - compute entry for this m in psit = Sum_l c_{lm}Q_{lm}**j
         psi[:,:,m] = n.dot(psir, Q.T)
         if (m > 0):
