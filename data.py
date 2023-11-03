@@ -52,6 +52,45 @@ def correct_flux_multiplicative(f):
 
     return f1
 
+
+def plgndr(m, x, lmax):
+    """
+        Evaluate associated Legendre polynomials P_lm(x) for given (positive)
+        m, from l=0,lmax, with spherical harmonic normalization included.
+        Only elements l=m:lmax are non-zero.
+        
+        Similar to scipy.special.lpmv except that function only works for 
+        small l due to overflow, because it doesn't include the normalizationp.
+    """
+
+    nx = np.size(x)
+    plm = np.zeros((nx, lmax + 1))
+    pmm = 1
+    if m > 0:
+        somx2 = (1 - x) * (1 + x)
+        fact = 1.0
+        for i in range(1, m + 1):
+            pmm *= somx2 * fact / (fact + 1)
+            fact += 2
+
+    pmm = np.sqrt((m + 0.5) * pmm)
+    pmm *= (-1) ** m
+    plm[:, m] = pmm
+    if m < lmax:
+        pmmp1 = x * np.sqrt(2 * m + 3) * pmm
+        plm[:, m + 1] = pmmp1
+        if m < lmax - 1:
+            for l in range(m + 2, lmax + 1):
+                fact1 = np.sqrt(
+                    ((l - 1.0) ** 2 - m ** 2) / (4.0 * (l - 1.0) ** 2 - 1.0)
+                )
+                fact = np.sqrt((4.0 * l ** 2 - 1.0) / (l ** 2 - m ** 2))
+                pll = (x * pmmp1 - pmm * fact1) * fact
+                pmm = pmmp1
+                pmmp1 = pll
+                plm[:, l] = pll
+    return plm
+
 # --------------------------------------------------------------------------------
 def readcrmap_hmi(rot, ns, nph, smooth=0):
     """
@@ -141,7 +180,7 @@ def readcrmap_hmi(rot, ns, nph, smooth=0):
         nm = 2 * lmax + 1  # only need to compute this many values
         plm = np.zeros((nsm, nm, lmax + 1))
         for m in range(lmax + 1):
-            plm[:, m, :] = preptools.plgndr(m, scm, lmax)
+            plm[:, m, :] = plgndr(m, scm, lmax)
         plm[:, nm - 1 : (nm - lmax - 1) : -1, :] = plm[:, 1 : lmax + 1, :]
 
         # Compute spherical harmonic coefficients:
@@ -271,7 +310,7 @@ def readcrmap_gong(rot, ns, nph, smooth=0):
         nm = 2*lmax+1  # only need to compute this many values
         plm = np.zeros((nsm, nm, lmax+1))
         for m in range(lmax+1):
-            plm[:,m,:] = preptools.plgndr(m, scm, lmax)
+            plm[:,m,:] = plgndr(m, scm, lmax)
         plm[:,nm-1:(nm-lmax-1):-1,:] = plm[:,1:lmax+1,:]
 
         # Compute spherical harmonic coefficients:
