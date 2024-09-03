@@ -23,7 +23,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from pfss import pfss
 from sunpy.coordinates.sun import carrington_rotation_number
-from data import readcrmap_hmi, readcrmap_gong
+from data import readcrmap_hmi, readcrmap_gong, readcrmap_nso
 import datetime
 
 # DEFINE GRID FOR PFSS COMPUTATION
@@ -45,7 +45,9 @@ cr_snap = int(carrington_rotation_number(date))
 # - to use HMI data:
 # br0 = readcrmap_hmi(cr_snap, ns, nph, smooth=0)
 # - to use GONG data:
-br0 = readcrmap_gong(cr_snap, ns, nph, smooth=0)
+# br0 = readcrmap_gong(cr_snap, ns, nph, smooth=0)
+# - to use GONSONG data:
+br0 = readcrmap_nso(cr_snap, ns, nph, smooth=0)
 
 # PLOT INPUT MAP:
 # - threshold for colour scales:

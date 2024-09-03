@@ -23,14 +23,9 @@ import matplotlib.pyplot as plt
 import ftplib
 import astropy.units as units
 from astropy.io import fits
-import sunpy.map
-from sunpy.coordinates.sun import carrington_rotation_number, carrington_rotation_time
-from sunpy.coordinates.sun import L0
-from scipy.interpolate import interp2d
-from scipy.ndimage.filters import gaussian_filter as gauss
+from sunpy.coordinates.sun import carrington_rotation_time
+from scipy.interpolate import RectBivariateSpline
 import drms
-from datetime import timedelta, datetime
-import urllib
 import sys
 
 def correct_flux_multiplicative(f):
@@ -215,12 +210,13 @@ def readcrmap_hmi(rot, ns, nph, smooth=0):
     pc = pc1 / 3 + 2 * np.pi / 3  # coordinate on the stitched grid
 
     # Interpolate to the computational grid:
-    bri = interp2d(
-        pcm, scm, brm3, kind="cubic", copy=True, bounds_error=False, fill_value=0
-    )
+    bri = RectBivariateSpline(pcm, scm, brm3.T)
+    # bri = interp2d(
+    #     pcm, scm, brm3, kind="cubic", copy=True, bounds_error=False, fill_value=0
+    # )
     br = np.zeros((ns, nph))
     for i in range(ns):
-        br[i, :] = bri(pc, sc[i]).flatten()
+        br[i, :] = bri(pc, sc[i]).T.flatten()
     del (brm3, bri)
 
     # (4) CORRECT FLUX BALANCE
@@ -339,18 +335,19 @@ def readcrmap_gong(rot, ns, nph, smooth=0):
     pc = pc1/3 + 2*np.pi/3  # coordinate on the stitched grid
 
     # Interpolate to the computational grid:
-    bri = interp2d(pcm, scm, brm3, kind='cubic', copy=True, bounds_error=False, fill_value=0)
+    bri = RectBivariateSpline(pcm, scm, brm3.T)
+    # bri = interp2d(pcm, scm, brm3, kind='cubic', copy=True, bounds_error=False, fill_value=0)
     br = np.zeros((ns, nph))
     for i in range(ns):
-        br[i,:] = bri(pc, sc[i]).flatten()
+        br[i,:] = bri(pc, sc[i]).T.flatten()
 
     # (4) INTERPOLATE LEFT AND RIGHT MAPS TO COMPUTATIONAL GRID
     # ---------------------------------------------------------
     brl = np.zeros((ns, nph))
     brr = np.zeros((ns, nph))
     for i in range(ns):
-        brl[i,:] = bri(pc - 2*np.pi/3, sc[i]).flatten()
-        brr[i,:] = bri(pc + 2*np.pi/3, sc[i]).flatten()
+        brl[i,:] = bri(pc - 2*np.pi/3, sc[i]).T.flatten()
+        brr[i,:] = bri(pc + 2*np.pi/3, sc[i]).T.flatten()
 
     del(brm3, bri)
 
@@ -384,4 +381,184 @@ def get_gongcr_filename(rot, ftp):
     for file in gongfiles:
         if file[17:21] == ('%4.4i' % rot):
             return subdir+file
+    return ''
+
+#--------------------------------------------------------------------------------------------------------------
+def readcrmap_nso(rot, ns, nph, smooth=0, datapath='./'):
+    """
+        Read in NSO synoptic map for Carrington rotation rot, corrects the flux and maps to the DuMFric grid.
+        Also reads in the neighbouring maps, and puts them together for smoothing.
+        
+        ARGUMENTS:
+            rot is the number of the required Carrington rotation (e.g. 2190)
+            ns and nph define the required grid (e.g. 180 and 360)
+            smooth [optional] controls the strength of smoothing (default 0 is no smoothing)   
+        
+        Searches NSO ftp site for KPVT or SOLIS synoptic maps.
+    """
+    ftp = ftplib.FTP('solis.nso.edu')
+    ftp.login()
+    ftp.cwd('integral/kbv7g')    
+    solisfiles = ftp.nlst()
+
+    # (1) READ IN DATA AND STITCH TOGETHER 3 ROTATIONS
+    # ------------------------------------------------
+    # Read in map and neighbours:
+    try:
+        try:
+            brm = (fits.open('ftp://nispdata.nso.edu/kpvt/synoptic/mag/m%4.4if.fits' % rot))[0].data
+            print('FOUND KPVT MAP FOR CR%4.4i' % rot)
+        except:
+            brm = (fits.open(get_solis_filename(rot, solisfiles)))[0].data
+            print('FOUND SOLIS MAP FOR CR%4.4i' % rot)
+    except:
+        print('! FAILED TO LOAD MAP FOR CR%4.4i' % rot)
+        brm = np.zeros((ns, nph))
+    try:
+        try:
+            brm_l = (fits.open('ftp://nispdata.nso.edu/kpvt/synoptic/mag/m%4.4if.fits' % (rot+1)))[0].data
+            print('FOUND KPVT MAP FOR CR%4.4i' % (rot+1))
+        except:
+            brm_l = (fits.open(get_solis_filename(rot+1, solisfiles)))[0].data
+            print('FOUND SOLIS MAP FOR CR%4.4i' % (rot+1))
+    except:
+        print('! FAILED TO LOAD MAP FOR CR%4.4i' % (rot+1))
+        brm_l = np.zeros((ns, nph))
+    try:
+        try:
+            brm_r = (fits.open('ftp://nispdata.nso.edu/kpvt/synoptic/mag/m%4.4if.fits' % (rot-1)))[0].data
+            print('FOUND KPVT MAP FOR CR%4.4i' % (rot-1))
+        except:
+            brm_r = (fits.open(get_solis_filename(rot-1, solisfiles)))[0].data
+            print('FOUND SOLIS MAP FOR CR%4.4i' % (rot-1))
+    except:
+        print('! FAILED TO LOAD MAP FOR CR%4.4i' % (rot-1))
+        brm_r = np.zeros((ns, nph))
+    
+    ftp.quit()
+
+    nsm = np.size(brm, axis=0)
+    npm = np.size(brm, axis=1)
+    dsm = 2.0/nsm
+    dpm = 2*np.pi/npm
+    scm = np.linspace(-1 + 0.5*dsm, 1 - 0.5*dsm, nsm)  
+    pcm = np.linspace(0.5*dpm, 2*np.pi - 0.5*dpm, npm)  
+    
+    # If necessary, rebin neighbouring map(s) to same resolution as central map:
+    if (np.shape(brm_l)!=np.shape(brm)):
+        nsl = np.size(brm_l, axis=0)
+        npl = np.size(brm_l, axis=1)
+        dsl = 2.0/nsl
+        dpl = 2*np.pi/npl
+        scl = np.linspace(-1 + 0.5*dsl, 1 - 0.5*dsl, nsl)  
+        pcl = np.linspace(0.5*dpl, 2*np.pi - 0.5*dpl, npl)
+        bri = RectBivariateSpline(pcl, scl, brm_l.T)
+        brm_l = np.zeros((nsm, npm))
+        for i in range(nsm):
+            brm_l[i,:] = bri(pcm, scm[i]).T.flatten()
+        del(bri)
+    if (np.shape(brm_r)!=np.shape(brm)):
+        nsr = np.size(brm_r, axis=0)
+        npr = np.size(brm_r, axis=1)
+        dsr = 2.0/nsr
+        dpr = 2*np.pi/npr
+        scr = np.linspace(-1 + 0.5*dsr, 1 - 0.5*dsr, nsr)  
+        pcr = np.linspace(0.5*dpr, 2*np.pi - 0.5*dpr, npr)
+        bri = RectBivariateSpline(pcr, scr, brm_r.T)
+        brm_r = np.zeros((nsm, npm))
+        for i in range(nsm):
+            brm_r[i,:] = bri(pcm, scm[i]).T.flatten()
+        del(bri)
+        
+    # Stitch together:
+    brm3 = np.concatenate((brm_l, brm, brm_r), axis=1)
+    del(brm, brm_l, brm_r)
+    
+    # Remove NaNs:
+    brm3 = np.nan_to_num(brm3)
+    
+    # Coordinates of combined map (pretend it goes only once around Sun in longitude!):
+    nsm = np.size(brm3, axis=0)
+    npm = np.size(brm3, axis=1)
+    dsm = 2.0/nsm
+    dpm = 2*np.pi/npm
+    scm = np.linspace(-1 + 0.5*dsm, 1 - 0.5*dsm, nsm)  
+    pcm = np.linspace(0.5*dpm, 2*np.pi - 0.5*dpm, npm)  
+
+    # (2) SMOOTH COMBINED MAP WITH SPHERICAL HARMONIC FILTER
+    # ------------------------------------------------------
+    if (smooth > 0):
+        # Azimuthal dependence by FFT:
+        brm3 = np.fft.fft(brm3, axis=1)
+
+        # Choose suitable lmax based on smoothing filter coefficient:
+        # -- such that exp[-smooth*lmax*(lmax+1)] < 0.05
+        # -- purpose of this is to make sure high l's are suppressed, to avoid ringing
+        lmax = 0.5*(-1 + np.sqrt(1-4*np.log(0.05)/smooth))
+        print('lmax = %i' % lmax)
+
+        # Compute Legendre polynomials on equal (s, ph) grid,
+        # with spherical harmonic normalisation:
+        lmax = 2*int((nph-1)/2)  # note - already lower resolution
+        nm = 2*lmax+1  # only need to compute this many values
+        plm = np.zeros((nsm, nm, lmax+1))
+        for m in range(lmax+1):
+            plm[:,m,:] = plgndr(m, scm, lmax)        
+        plm[:,nm-1:(nm-lmax-1):-1,:] = plm[:,1:lmax+1,:]
+        
+        # Compute spherical harmonic coefficients:
+        blm = np.zeros((nm,lmax+1), dtype='complex')
+        for l in range(lmax+1):
+            blm[:lmax+1,l] = np.sum(plm[:,:lmax+1,l]*brm3[:,:lmax+1]*dsm, axis=0)
+            blm[lmax+1:,l] = np.sum(plm[:,lmax+1:,l]*brm3[:,-lmax:]*dsm, axis=0)
+            # Apply smoothing filter:
+            blm[:,l] *= np.exp(-smooth*l*(l+1))
+
+        # Invert transform:
+        brm3[:,:] = 0.0
+        for j in range(nsm):
+            brm3[j,:lmax+1] = np.sum(blm[:lmax+1,:]*plm[j,:lmax+1,:], axis=1)
+            brm3[j,-lmax:] = np.sum(blm[lmax+1:,:]*plm[j,lmax+1:,:], axis=1)
+
+        brm3 = np.real(np.fft.ifft(brm3, axis=1))
+                               
+    # (3) INTERPOLATE CENTRAL MAP TO COMPUTATIONAL GRID
+    # -------------------------------------------------
+    # Form computational grid arrays:
+    ds = 2.0/ns
+    dph = 2*np.pi/nph
+    sc = np.linspace(-1 + 0.5*ds, 1 - 0.5*ds, ns)  
+    pc1 = np.linspace( 0.5*dph, 2*np.pi - 0.5*dph, nph)
+    pc = pc1/3 + 2*np.pi/3  # coordinate on the stitched grid
+    
+    # Interpolate to the computational grid:
+    bri = RectBivariateSpline(pcm, scm, brm3.T)
+    br = np.zeros((ns, nph))
+    for i in range(ns):
+        br[i,:] = bri(pc, sc[i]).T.flatten()
+                
+    # (4) INTERPOLATE LEFT AND RIGHT MAPS TO COMPUTATIONAL GRID
+    # ---------------------------------------------------------
+    brl = np.zeros((ns, nph))
+    brr = np.zeros((ns, nph))
+    for i in range(ns):
+        brl[i,:] = bri(pc - 2*np.pi/3, sc[i]).flatten()
+        brr[i,:] = bri(pc + 2*np.pi/3, sc[i]).flatten()
+
+    del(brm3, bri)
+
+    # (5) CORRECT FLUX BALANCE
+    # ------------------------
+    br = correct_flux_multiplicative(br)
+                
+    return br
+
+#--------------------------------------------------------------------------------------------------------------
+def get_solis_filename(rot, solisfiles):
+    """
+    Download a SOLIS map.
+    """
+    for f in solisfiles:
+        if (('c%4.4i' % rot in f) & ('fits.gz' in f)):
+            return 'ftp://solis.nso.edu/integral/kbv7g/'+f
     return ''
