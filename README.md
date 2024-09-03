@@ -7,3 +7,6 @@ Please see pfss-manual.pdf for more details.
 
 ## 2023-May-9
 Added new script `compute_pfss_data.py` to illustrate how to use HMI or GONG synoptic maps via sunpy. Subroutines are in `data.py`.
+
+## 2024-Sep-3
+Added code to `data.py` to load NSO synoptic maps (KPVT or SOLIS). Added illustration of how to use in `compute_pfss_data.py`.
